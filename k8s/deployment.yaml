@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello-cicd
+  labels:
+    app: hello-cicd
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: hello-cicd
+  template:
+    metadata:
+      labels:
+        app: hello-cicd
+    spec:
+      containers:
+        - name: web
+          # The pipeline rewrites this line on every push to main.
+          # Until the first pipeline run, a plain nginx image is used as a placeholder.
+          image: nginx:alpine
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi

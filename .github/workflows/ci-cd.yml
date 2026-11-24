@@ -1,0 +1,141 @@
+# ===============================================================
+# KEY CONCEPTS (read this first)
+# ---------------------------------------------------------------
+# WORKFLOW  This whole file. GitHub runs any .yml file in .github/workflows/
+#           automatically. Nothing needs to be installed or registered.
+# JOB       A named group of steps ("test", "build-and-push", "update-manifest").
+#           Each job gets its own fresh VM. Jobs run in parallel unless
+#           "needs:" orders them.
+# STEP      One thing a job does. A step is either:
+#             run:  a shell command you write (e.g. npm test)
+#             uses: a ready-made "action" someone else wrote
+# ACTION    A reusable plugin, published as a GitHub repository.
+#           "uses: actions/checkout@v7" means:
+#             actions   = GitHub user/org that owns it  (github.com/actions)
+#             checkout  = repository name             (github.com/actions/checkout)
+#             @v7       = which version: a git tag (or branch/commit SHA) in that repo
+#           GitHub downloads that repo at that tag and runs it. Browse actions
+#           at https://github.com/marketplace?type=actions
+#           "v7" is a moving major-version tag: you get v7.x bug fixes, but not
+#           breaking v8 changes. For maximum safety, pin a full commit SHA
+#           instead, e.g. actions/checkout@<40-char-sha>.
+# ${{ }}    An expression GitHub fills in before running, e.g. ${{ github.actor }}.
+# ===============================================================
+
+# Name shown in the GitHub "Actions" tab
+name: CI/CD
+
+# ---------------------------------------------------------------
+# TRIGGERS: when should this workflow run?
+# ---------------------------------------------------------------
+on:
+  pull_request:          # Run on every pull request (CI only: the deploy jobs below skip themselves)
+  push:                  # Also run when commits are pushed...
+    branches: [main]     # ...but only pushes to the main branch (CI + CD)
+    paths-ignore:        # Skip the run if the push ONLY changed these paths:
+      - 'k8s/**'         # the manifests (the pipeline edits these itself; without this rule it would loop forever)
+      - 'argocd/**'      # Argo CD config (not part of the app build)
+      - '**.md'          # docs (changing the README shouldn't trigger a deploy)
+
+# Variables available to every job in this workflow
+env:
+  REGISTRY: ghcr.io                     # Push images to GitHub Container Registry
+  # GHCR image names must be lowercase; this is fixed up in the build job
+  IMAGE_NAME: ${{ github.repository }}  # "owner/repo", e.g. "YourName/hello-cicd"
+
+jobs:
+  # ---------------------------------------------------------------
+  # 1. CI: lint, test, build. Runs on every PR and every push to main.
+  # ---------------------------------------------------------------
+  # "test" is just a name we chose; any name works. It has no "if:", so it runs
+  # for EVERY trigger above: on PRs AND on pushes to main. The other two jobs
+  # have an "if:" (or inherit one through "needs:"), which is why they skip on PRs.
+  test:                              # Job ID (other jobs refer to it with "needs: test")
+    runs-on: ubuntu-latest           # A fresh GitHub-hosted Linux VM runs this job
+    steps:                           # Steps run in order; if one fails, the job stops
+      - uses: actions/checkout@v7    # Clone the repo into the VM (it starts empty)
+
+      - uses: actions/setup-node@v7  # Install Node.js on the VM
+        with:
+          node-version: 24           # Use Node 24 (same as the Dockerfile)
+          cache: npm                 # Cache ~/.npm between runs, keyed on package-lock.json, so installs are faster
+
+      - run: npm ci                  # Clean install of the exact versions in package-lock.json
+      - run: npm run lint            # ESLint: fail on code-quality problems
+      - run: npm test                # Vitest: fail if any unit test fails
+      - run: npm run build           # Vite build: fail if the app doesn't compile
+
+  # ---------------------------------------------------------------
+  # 2. Build the Docker image and push it to GitHub Container Registry.
+  #    Only on main, and only if tests passed.
+  # ---------------------------------------------------------------
+  build-and-push:
+    needs: test                      # Wait for "test" and run only if it succeeded
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'  # Skip on PRs; run only for pushes to main
+    runs-on: ubuntu-latest           # Another fresh VM (jobs don't share files)
+    permissions:                     # What the automatic GITHUB_TOKEN may do in this job
+      contents: read                 # Read the repo code
+      packages: write                # Push images to ghcr.io with GITHUB_TOKEN
+    outputs:                         # Values this job hands to later jobs
+      image: ${{ steps.vars.outputs.image }}  # The full image name+tag computed below
+    steps:
+      - uses: actions/checkout@v7    # Clone the repo (needed for the Dockerfile and source)
+
+      - name: Compute image name and tag
+        id: vars                     # ID so other steps and outputs can read this step's results
+        run: |
+          # ${IMAGE_NAME,,} lowercases the name (bash syntax); ${GITHUB_SHA::7} takes the first 7 chars of the commit SHA
+          IMAGE="${REGISTRY}/${IMAGE_NAME,,}:sha-${GITHUB_SHA::7}"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"   # Save as a step output (steps.vars.outputs.image)
+          echo "Will build $IMAGE"                  # Print it to the log, for humans
+
+      # QEMU + Buildx let us build for both Intel/AMD and ARM (Apple Silicon) machines
+      - uses: docker/setup-qemu-action@v4    # QEMU emulates other CPU architectures (arm64 on an amd64 runner)
+      - uses: docker/setup-buildx-action@v4  # Buildx: Docker's builder with multi-platform and cache support
+
+      - uses: docker/login-action@v4         # Log Docker in to the registry
+        with:
+          registry: ${{ env.REGISTRY }}           # ghcr.io
+          username: ${{ github.actor }}           # The user who triggered the run
+          password: ${{ secrets.GITHUB_TOKEN }}   # Token GitHub creates for every run; no secret to set up
+
+      - uses: docker/build-push-action@v7    # Build the image from the Dockerfile and push it
+        with:
+          context: .                              # Build context: the repo root (.dockerignore trims it)
+          push: true                              # Push to the registry after building
+          platforms: linux/amd64,linux/arm64      # Build one multi-arch image for both CPU types
+          tags: ${{ steps.vars.outputs.image }}   # Tag it with the name computed above
+          cache-from: type=gha                    # Reuse layers cached by earlier runs (GitHub Actions cache)
+          cache-to: type=gha,mode=max             # Save all layers (mode=max) to that cache for next time
+
+  # ---------------------------------------------------------------
+  # 3. CD (GitOps style): write the new image tag into k8s/deployment.yaml
+  #    and commit it. Argo CD notices the commit and deploys it.
+  #    The pipeline never touches the cluster directly.
+  # ---------------------------------------------------------------
+  update-manifest:
+    needs: build-and-push            # Run only after the image is pushed (this also inherits its main-only condition)
+    runs-on: ubuntu-latest
+    concurrency: deploy              # Only one "deploy" at a time; a new one waits instead of racing
+    permissions:
+      contents: write                # Commit and push back to the repo
+    steps:
+      - uses: actions/checkout@v7    # Clone the repo so we can edit the manifest
+
+      - name: Bump image tag in deployment.yaml
+        env:
+          IMAGE: ${{ needs.build-and-push.outputs.image }}  # Image name+tag from job 2
+        run: |
+          # Find every line like "  image: <anything>", keep the indent and "image: " (\1), replace the rest with $IMAGE
+          sed -i -E "s|^([[:space:]]*image:[[:space:]]*).*|\1${IMAGE}|" k8s/deployment.yaml
+          git diff                   # Show the change in the log
+
+      - name: Commit and push
+        run: |
+          git config user.name  "github-actions[bot]"   # Commit author name
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"  # GitHub's official bot email
+          git add k8s/deployment.yaml                   # Stage the edited manifest
+          # Commit; "[skip ci]" stops this commit from starting another run. "|| exit 0": nothing changed means success, not failure
+          git commit -m "deploy: ${{ needs.build-and-push.outputs.image }} [skip ci]" || exit 0
+          git pull --rebase origin main   # in case someone pushed while we were building
+          git push origin HEAD:main       # Push the commit to main; Argo CD picks it up from here

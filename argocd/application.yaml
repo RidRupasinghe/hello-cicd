@@ -1,0 +1,22 @@
+# Tells Argo CD: "keep the cluster in sync with the k8s/ folder of this repo".
+# Replace YOUR_GITHUB_USERNAME before applying.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hello-cicd
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/YOUR_GITHUB_USERNAME/hello-cicd.git
+    targetRevision: main
+    path: k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: hello-cicd
+  syncPolicy:
+    automated:
+      prune: true      # delete resources that were removed from Git
+      selfHeal: true   # undo manual changes made with kubectl
+    syncOptions:
+      - CreateNamespace=true
