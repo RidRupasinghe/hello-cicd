@@ -1,0 +1,17 @@
+name: Hello
+
+on:
+  pull_request:
+    branches:
+      - develop
+  push:
+    branches:
+      - develop
+env:
+ REGISTRY: ghcr.io
+
+jobs:
+  print-hello:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Hello World"
