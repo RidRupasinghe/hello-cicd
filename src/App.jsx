@@ -1,5 +1,5 @@
 // Change this message, push to main, and watch the pipeline deploy it.
-export const MESSAGE = 'Hello, World!'
+export const MESSAGE = 'Hello, World2!'
 
 export default function App() {
   return (
