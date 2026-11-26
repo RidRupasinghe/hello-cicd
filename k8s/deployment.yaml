@@ -18,7 +18,7 @@ spec:
         - name: web
           # The pipeline rewrites this line on every push to main.
           # Until the first pipeline run, a plain nginx image is used as a placeholder.
-          image: ghcr.io/ridrupasinghe/hello-cicd:sha-ec93218
+          image: ghcr.io/ridrupasinghe/hello-cicd:sha-fc8c957
           ports:
             - containerPort: 80
           readinessProbe:
