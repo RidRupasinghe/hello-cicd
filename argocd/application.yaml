@@ -1,22 +1,55 @@
-# Tells Argo CD: "keep the cluster in sync with the k8s/ folder of this repo".
-# Replace YOUR_GITHUB_USERNAME before applying.
-apiVersion: argoproj.io/v1alpha1
+# ===============================================================
+# KEY CONCEPTS (read this first)
+# ---------------------------------------------------------------
+# ARGO CD       A program running INSIDE the cluster that watches a Git repo
+#               and makes the cluster match it. This is the "pull" half of
+#               GitOps: the pipeline only pushes to Git, and Argo CD pulls
+#               from Git. The pipeline never needs cluster credentials.
+# APPLICATION   This file. An Argo CD custom resource that says "this folder,
+#               in this repo, at this branch, goes into this cluster and
+#               namespace". It's a Kubernetes object, so you apply it once with
+#                 kubectl apply -f argocd/application.yaml
+#               and Argo CD takes it from there.
+# SYNC          Making the cluster match Git. "Synced" = they match;
+#               "OutOfSync" = Git has changes the cluster doesn't (or the
+#               reverse). By default Argo CD checks the repo about every 3 minutes.
+# SOURCE OF TRUTH  Git, not the cluster. If the two disagree, Git wins.
+#
+# This file lives outside k8s/ on purpose: Argo CD syncs k8s/, and this file
+# is what configures that sync, so it's applied by hand once.
+# ===============================================================
+
+apiVersion: argoproj.io/v1alpha1   # API group added by Argo CD when you install it
 kind: Application
 metadata:
-  name: hello-cicd
-  namespace: argocd
+  name: hello-cicd                 # Name shown in the Argo CD UI and in "argocd app get hello-cicd"
+  namespace: argocd                # Application objects must live in Argo CD's own namespace
 spec:
-  project: default
+  project: default                 # Argo CD "project" (a permissions group); "default" allows everything
+
+  # ---------------------------------------------------------------
+  # SOURCE: where the desired state comes from (Git)
+  # ---------------------------------------------------------------
   source:
+    # The repo to watch. If you forked this project, put your own GitHub
+    # username here (the template uses YOUR_GITHUB_USERNAME as a placeholder).
     repoURL: https://github.com/RidRupasinghe/hello-cicd.git
-    targetRevision: main
-    path: k8s
+    targetRevision: main           # Branch (or tag/commit) to follow
+    path: k8s                      # Folder in the repo with the manifests; every YAML in it gets applied
+
+  # ---------------------------------------------------------------
+  # DESTINATION: where to put it (the cluster)
+  # ---------------------------------------------------------------
   destination:
-    server: https://kubernetes.default.svc
-    namespace: hello-cicd
+    server: https://kubernetes.default.svc   # "This same cluster" (the address Argo CD uses to reach the API server it runs in)
+    namespace: hello-cicd                     # Namespace for the Deployment and Service from k8s/
+
+  # ---------------------------------------------------------------
+  # SYNC POLICY: what Argo CD does when Git and the cluster differ
+  # ---------------------------------------------------------------
   syncPolicy:
-    automated:
+    automated:         # Sync on its own when Git changes (without this you'd click "Sync" in the UI)
       prune: true      # delete resources that were removed from Git
-      selfHeal: true   # undo manual changes made with kubectl
+      selfHeal: true   # undo manual changes made with kubectl (try: kubectl scale ... --replicas=5, then watch it go back to 2)
     syncOptions:
-      - CreateNamespace=true
+      - CreateNamespace=true   # Create the hello-cicd namespace if it doesn't exist yet

@@ -1,10 +1,29 @@
-apiVersion: v1
+# ===============================================================
+# KEY CONCEPTS (read this first)
+# ---------------------------------------------------------------
+# SERVICE     This file. A stable network address in front of a changing set
+#             of Pods. Pods come and go (each with a new IP); the Service's
+#             name and IP stay the same and it load-balances across whichever
+#             Pods are currently ready.
+# SELECTOR    How the Service finds its Pods: by label. Any ready Pod labelled
+#             "app: hello-cicd" (set in deployment.yaml) receives traffic.
+# ClusterIP   The default Service type (used here because no "type:" is set).
+#             Reachable only from inside the cluster. To open it from your
+#             laptop, port-forward:
+#               kubectl -n hello-cicd port-forward svc/hello-cicd 8080:80
+#             then browse to http://localhost:8080
+# DNS         Inside the cluster, other Pods can reach this at
+#             http://hello-cicd (same namespace) or
+#             http://hello-cicd.hello-cicd.svc.cluster.local (from anywhere).
+# ===============================================================
+
+apiVersion: v1               # Services are in the core API group, so just "v1"
 kind: Service
 metadata:
-  name: hello-cicd
+  name: hello-cicd           # The Service's name; also its DNS name inside the cluster
 spec:
   selector:
-    app: hello-cicd
+    app: hello-cicd          # Send traffic to Pods with this label (must match deployment.yaml)
   ports:
-    - port: 80
-      targetPort: 80
+    - port: 80               # Port the Service listens on (what clients connect to)
+      targetPort: 80         # Port on the Pod to forward to (the containerPort in deployment.yaml)

@@ -1,37 +1,77 @@
-apiVersion: apps/v1
-kind: Deployment
+# ===============================================================
+# KEY CONCEPTS (read this first)
+# ---------------------------------------------------------------
+# MANIFEST    A YAML file describing what you WANT to exist in the cluster.
+#             You don't tell Kubernetes "start 2 containers"; you declare
+#             "there should be 2" and Kubernetes keeps making it true.
+# POD         The smallest thing Kubernetes runs: one or more containers
+#             that share a network address. Pods are disposable; they get
+#             replaced, never repaired.
+# DEPLOYMENT  This file. Keeps a set number of identical Pods running. If a
+#             Pod dies, it starts a new one. If the image changes, it does a
+#             rolling update: new Pods come up before old ones go away.
+# LABELS      Key/value tags (here "app: hello-cicd"). Kubernetes objects find
+#             each other by label, not by name. The Deployment finds its Pods
+#             this way, and so does service.yaml.
+# GITOPS      Nobody runs "kubectl apply" on this file. Argo CD reads it from
+#             Git and applies it (see argocd/application.yaml).
+# ===============================================================
+
+apiVersion: apps/v1          # API group/version that defines the Deployment type
+kind: Deployment             # What kind of object this is
 metadata:
-  name: hello-cicd
+  name: hello-cicd           # The Deployment's name (kubectl get deploy hello-cicd)
   labels:
-    app: hello-cicd
+    app: hello-cicd          # Label on the Deployment itself (handy for filtering; not used for matching)
 spec:
-  replicas: 2
+  replicas: 2                # Keep 2 Pods running at all times (one can restart while the other serves)
+
+  # Which Pods does this Deployment own? Any Pod with these labels.
+  # Must match template.metadata.labels below, or Kubernetes rejects the file.
   selector:
     matchLabels:
       app: hello-cicd
+
+  # ---------------------------------------------------------------
+  # POD TEMPLATE: the blueprint for every Pod this Deployment creates.
+  # Changing anything in here (e.g. the image) triggers a rolling update.
+  # ---------------------------------------------------------------
   template:
     metadata:
       labels:
-        app: hello-cicd
+        app: hello-cicd      # Stamped on every Pod; the selector above and service.yaml look for it
     spec:
       containers:
-        - name: web
-          # The pipeline rewrites this line on every push to main.
+        - name: web          # Container name inside the Pod (shows up in kubectl logs/describe)
+          # The pipeline rewrites the image line below on every push to main
+          # (update-manifest job in .github/workflows/ci-cd.yml). Don't edit it by
+          # hand except to roll back on purpose. Don't put a comment on the same
+          # line either: the sed replaces everything after "image:".
           # Until the first pipeline run, a plain nginx image is used as a placeholder.
           image: ghcr.io/ridrupasinghe/hello-cicd:sha-fc8c957
           ports:
-            - containerPort: 80
+            - containerPort: 80   # nginx listens on port 80 inside the container (see nginx.conf)
+
+          # READINESS: "is this Pod ready for traffic?" Until it passes, the
+          # Service won't send requests here. During a rolling update, old Pods
+          # are only removed once new ones are ready, so there's no downtime.
           readinessProbe:
             httpGet:
-              path: /
+              path: /             # GET / must return a 2xx/3xx status
               port: 80
+
+          # LIVENESS: "is this Pod still alive?" If it fails repeatedly,
+          # Kubernetes kills the container and restarts it.
           livenessProbe:
             httpGet:
               path: /
               port: 80
+
+          # RESOURCES: how much CPU/memory this container gets.
           resources:
-            requests:
-              cpu: 10m
-              memory: 16Mi
-            limits:
-              memory: 64Mi
+            requests:             # Reserved for the container; the scheduler uses this to pick a node
+              cpu: 10m            # 10 millicores = 1% of one CPU core (plenty for static files)
+              memory: 16Mi        # 16 mebibytes
+            limits:               # Hard ceiling
+              memory: 64Mi        # Go over this and the container is killed (OOMKilled) and restarted
+                                  # (No CPU limit: going over a CPU limit only slows the container down, and that's rarely what you want)
